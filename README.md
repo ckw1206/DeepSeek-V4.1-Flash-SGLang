@@ -43,7 +43,7 @@ TP = EP = number of GPUs in `GPU_ID`:
 | GPUs | Status |
 |---|---|
 | 8 | Verified cookbook H200 cell (`MEM_FRACTION` 0.8) |
-| 4 | Unverified. ~564GB total vs ~510GB weights, so `MEM_FRACTION` defaults to 0.9 and KV cache is small (short contexts, low concurrency) |
+| 4 | Tight. ~564GB total vs ~510GB weights; defaults to `MEM_FRACTION` 0.92 plus `--max-running-requests 16 --chunked-prefill-size 1024 --context-length 32768` (override via `EXTRA_ARGS`) |
 | 2 | Rejected: ~282GB can't hold the ~510GB weights |
 
 ### Settings (`.env` or shell env)
@@ -53,7 +53,7 @@ TP = EP = number of GPUs in `GPU_ID`:
 | `GPU_ID` | `0,1,2,3,4,5,6,7` | GPUs passed to the container (4 or 8) |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | API bind address |
 | `IMAGE` | `lmsysorg/sglang:dev-dsv41` | Preview build; V4.1 is not in an SGLang release yet |
-| `MEM_FRACTION` | `0.8` (8 GPUs) / `0.9` (4 GPUs) | `--mem-fraction-static` |
+| `MEM_FRACTION` | `0.8` (8 GPUs) / `0.92` (4 GPUs) | `--mem-fraction-static` |
 | `THINKING` | `0` | `1` = think by default (`SGLANG_DEFAULT_THINKING`) |
 | `DSPARK` | `0` | `1` = DSpark speculative decoding (bundled draft, block size 5) |
 | `HF_CACHE` | `~/.cache/huggingface` | Host model cache |
