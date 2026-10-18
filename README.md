@@ -1,4 +1,4 @@
-# DeepSeek-V4.1-Flash on SGLang (8x H200)
+# DeepSeek-V4.1-Flash on SGLang (H200)
 
 One-command SGLang deployment of [deepseek-ai/DeepSeek-V4.1-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash), serving an OpenAI-compatible API.
 
@@ -38,16 +38,22 @@ First boot downloads ~510GB of weights into `~/.cache/huggingface` (override wit
 
 ### Parallelism
 
-TP8 + EP8 on all 8 GPUs, the only H200 recipe. `GPU_ID` must list 8 GPUs; 4x H200 (~564GB) can't fit the ~510GB weights plus KV cache.
+TP = EP = number of GPUs in `GPU_ID`:
+
+| GPUs | Status |
+|---|---|
+| 8 | Verified cookbook H200 cell (`MEM_FRACTION` 0.8) |
+| 4 | Unverified. ~564GB total vs ~510GB weights, so `MEM_FRACTION` defaults to 0.9 and KV cache is small (short contexts, low concurrency) |
+| 2 | Rejected: ~282GB can't hold the ~510GB weights |
 
 ### Settings (`.env` or shell env)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GPU_ID` | `0,1,2,3,4,5,6,7` | GPUs passed to the container (must be 8) |
+| `GPU_ID` | `0,1,2,3,4,5,6,7` | GPUs passed to the container (4 or 8) |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | API bind address |
 | `IMAGE` | `lmsysorg/sglang:dev-dsv41` | Preview build; V4.1 is not in an SGLang release yet |
-| `MEM_FRACTION` | `0.8` | `--mem-fraction-static` |
+| `MEM_FRACTION` | `0.8` (8 GPUs) / `0.9` (4 GPUs) | `--mem-fraction-static` |
 | `THINKING` | `0` | `1` = think by default (`SGLANG_DEFAULT_THINKING`) |
 | `DSPARK` | `0` | `1` = DSpark speculative decoding (bundled draft, block size 5) |
 | `HF_CACHE` | `~/.cache/huggingface` | Host model cache |

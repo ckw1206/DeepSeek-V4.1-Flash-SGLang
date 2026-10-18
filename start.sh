@@ -7,8 +7,10 @@ set -euo pipefail
 #   https://docs.sglang.io/cookbook/autoregressive/DeepSeek/DeepSeek-V4_1
 #
 # Notes:
-#   - MoE model (fp8 dense + fp4 experts), ~510GB weights. The only H200
-#     recipe is TP8 + EP8 on 8 GPUs; 4x H200 (~564GB) leaves no room for KV.
+#   - MoE model (fp8 dense + fp4 experts), ~510GB weights. TP = EP = GPU count.
+#     8 GPUs is the verified cookbook cell. 4 GPUs (~564GB) is unverified and
+#     tight: MEM_FRACTION defaults to 0.9 there, leaving little KV cache.
+#     2 GPUs (~282GB) cannot hold the weights and is rejected up front.
 #   - Not in an SGLang release yet: needs the preview image
 #     lmsysorg/sglang:dev-dsv41.
 #   - Cookbook pins --attention-backend dsv4, --moe-runner-backend
@@ -41,7 +43,6 @@ IMAGE="${IMAGE:-lmsysorg/sglang:dev-dsv41}"
 GPU_ID="${GPU_ID:-0,1,2,3,4,5,6,7}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
-MEM_FRACTION="${MEM_FRACTION:-0.8}"
 THINKING="${THINKING:-0}"
 HF_CACHE="${HF_CACHE:-${HOME}/.cache/huggingface}"
 # Free-form extra SGLang flags, appended LAST (argparse last-wins):
@@ -49,9 +50,13 @@ HF_CACHE="${HF_CACHE:-${HOME}/.cache/huggingface}"
 read -ra EXTRA_ARGS_ARR <<< "${EXTRA_ARGS:-}"
 
 TP_SIZE="$(tr ',' '\n' <<< "${GPU_ID}" | grep -c '[0-9]' || true)"
-if [[ "${TP_SIZE}" != 8 ]]; then
-  echo "GPU_ID='${GPU_ID}' gives ${TP_SIZE} GPUs; DeepSeek-V4.1-Flash H200 recipe needs 8"; exit 1
-fi
+case "${TP_SIZE}" in
+  8) MEM_FRACTION="${MEM_FRACTION:-0.8}" ;;
+  4) MEM_FRACTION="${MEM_FRACTION:-0.9}"
+     echo "WARNING: 4x H200 is not a verified recipe; ~510GB weights leave little KV cache" ;;
+  2) echo "GPU_ID='${GPU_ID}' gives 2 GPUs (~282GB); DeepSeek-V4.1-Flash weights are ~510GB. Use 4 or 8"; exit 1 ;;
+  *) echo "GPU_ID='${GPU_ID}' gives ${TP_SIZE} GPUs; use 4 or 8 (2 is too small for the weights)"; exit 1 ;;
+esac
 
 DSPARK="${DSPARK:-0}"
 case "${DSPARK}" in
@@ -80,7 +85,7 @@ if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
 fi
 
 echo "Starting SGLang container for ${MODEL_ID}"
-echo "GPUs: ${GPU_ID} (TP8 + EP8)"
+echo "GPUs: ${GPU_ID} (TP${TP_SIZE} + EP${TP_SIZE}, mem-fraction ${MEM_FRACTION})"
 echo "Default thinking: $( (( THINKING )) && echo on || echo off)"
 echo "Spec decode: $( (( DSPARK )) && echo DSpark || echo off)"
 echo "Image: ${IMAGE}"
@@ -106,8 +111,8 @@ docker run -d \
   --model-path "${MODEL_ID}" \
   --served-model-name "${SERVED_MODEL_NAME}" \
   --trust-remote-code \
-  --tp 8 \
-  --ep-size 8 \
+  --tp "${TP_SIZE}" \
+  --ep-size "${TP_SIZE}" \
   --mem-fraction-static "${MEM_FRACTION}" \
   --attention-backend dsv4 \
   --moe-runner-backend flashinfer_mxfp4 \
