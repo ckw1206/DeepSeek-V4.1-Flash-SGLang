@@ -10,8 +10,9 @@ set -euo pipefail
 #   - MoE model (fp8 dense + fp4 experts), ~510GB weights. TP = EP = GPU count.
 #     8 GPUs is the verified cookbook cell. 4 GPUs (~564GB) is tight: it needs
 #     MEM_FRACTION 0.92, --max-running-requests 16, --chunked-prefill-size 1024
-#     and --context-length 32768 to start; those are the 4-GPU defaults
-#     (EXTRA_ARGS still overrides them).
+#     and a capped --context-length (CONTEXT_LENGTH, default 65536) to start;
+#     those are the 4-GPU defaults (EXTRA_ARGS still overrides them). 8 GPUs
+#     run the model's full window. Clients like Hermes need >= 64K.
 #     2 GPUs (~282GB) cannot hold the weights and is rejected up front.
 #   - Not in an SGLang release yet: needs the preview image
 #     lmsysorg/sglang:dev-dsv41.
@@ -46,6 +47,8 @@ GPU_ID="${GPU_ID:-0,1,2,3,4,5,6,7}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 THINKING="${THINKING:-0}"
+# 4-GPU only: the KV cache is what is left after weights, so the window is capped.
+CONTEXT_LENGTH="${CONTEXT_LENGTH:-65536}"
 HF_CACHE="${HF_CACHE:-${HOME}/.cache/huggingface}"
 # Free-form extra SGLang flags, appended LAST (argparse last-wins):
 #   EXTRA_ARGS="--max-running-requests 256" ./start.sh
@@ -56,8 +59,8 @@ case "${TP_SIZE}" in
   8) MEM_FRACTION="${MEM_FRACTION:-0.8}" ;;
   4) MEM_FRACTION="${MEM_FRACTION:-0.92}"
      # Required to fit on 4 GPUs; placed before EXTRA_ARGS so it can override.
-     EXTRA_ARGS_ARR=(--max-running-requests 16 --chunked-prefill-size 1024 --context-length 32768 ${EXTRA_ARGS_ARR[@]+"${EXTRA_ARGS_ARR[@]}"})
-     echo "WARNING: 4x H200 is tight; capped at 16 running requests and 32K context" ;;
+     EXTRA_ARGS_ARR=(--max-running-requests 16 --chunked-prefill-size 1024 --context-length "${CONTEXT_LENGTH}" ${EXTRA_ARGS_ARR[@]+"${EXTRA_ARGS_ARR[@]}"})
+     echo "WARNING: 4x H200 is tight; capped at 16 running requests and ${CONTEXT_LENGTH} context" ;;
   2) echo "GPU_ID='${GPU_ID}' gives 2 GPUs (~282GB); DeepSeek-V4.1-Flash weights are ~510GB. Use 4 or 8"; exit 1 ;;
   *) echo "GPU_ID='${GPU_ID}' gives ${TP_SIZE} GPUs; use 4 or 8 (2 is too small for the weights)"; exit 1 ;;
 esac
