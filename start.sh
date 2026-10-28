@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# DeepSeek-V4.1-Flash on SGLang (8x H200 141GB)
+# DeepSeek-V4.1-Flash on SGLang (8x H200 141GB verified; larger GPUs auto-detected)
 #
 # Recipe from the SGLang cookbook (H200 cell, verified):
 #   https://docs.sglang.io/cookbook/autoregressive/DeepSeek/DeepSeek-V4_1
@@ -19,6 +19,14 @@ set -euo pipefail
 #   - Cookbook pins --attention-backend dsv4, --moe-runner-backend
 #     flashinfer_mxfp4 and --cuda-graph-max-bs-decode 64 on H200 (the
 #     derived decode graph batch list does not fit in 140 GiB).
+#   - Per-GPU memory is read from nvidia-smi (override: GPU_MEM_GB, in GiB).
+#     Fewer than 160 GiB per GPU (H200) keeps the pins above. At 160+ GiB
+#     (B200, B300, ...) the pins are dropped so SGLang resolves backends and the
+#     decode graph list itself (the cookbook says not to override them; the graph
+#     cap only exists for 140 GiB) and MEM_FRACTION stays 0.8 (0.9 OOM'd
+#     in prefill on 8x B300 under load; KV is plentiful at 0.8). Total memory
+#     decides the rest: < 500 GiB is rejected, < 600 GiB gets the squeeze caps.
+#     Not yet run on B200/B300 here: check the startup log for resolved backends.
 #   - --reasoning-parser auto (-> deepseek-v41) splits thinking into
 #     reasoning_content. Thinking is OFF by default; send reasoning_effort
 #     per request, or THINKING=1 turns it on server-wide.
@@ -47,7 +55,7 @@ GPU_ID="${GPU_ID:-0,1,2,3,4,5,6,7}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 THINKING="${THINKING:-0}"
-# 4-GPU only: the KV cache is what is left after weights, so the window is capped.
+# Tight (< 600 GiB total) only: the KV cache is what is left after weights, so the window is capped.
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-65536}"
 HF_CACHE="${HF_CACHE:-${HOME}/.cache/huggingface}"
 # Free-form extra SGLang flags, appended LAST (argparse last-wins):
@@ -55,15 +63,42 @@ HF_CACHE="${HF_CACHE:-${HOME}/.cache/huggingface}"
 read -ra EXTRA_ARGS_ARR <<< "${EXTRA_ARGS:-}"
 
 TP_SIZE="$(tr ',' '\n' <<< "${GPU_ID}" | grep -c '[0-9]' || true)"
-case "${TP_SIZE}" in
-  8) MEM_FRACTION="${MEM_FRACTION:-0.8}" ;;
-  4) MEM_FRACTION="${MEM_FRACTION:-0.92}"
-     # Required to fit on 4 GPUs; placed before EXTRA_ARGS so it can override.
-     EXTRA_ARGS_ARR=(--max-running-requests 16 --chunked-prefill-size 1024 --context-length "${CONTEXT_LENGTH}" ${EXTRA_ARGS_ARR[@]+"${EXTRA_ARGS_ARR[@]}"})
-     echo "WARNING: 4x H200 is tight; capped at 16 running requests and ${CONTEXT_LENGTH} context" ;;
-  2) echo "GPU_ID='${GPU_ID}' gives 2 GPUs (~282GB); DeepSeek-V4.1-Flash weights are ~510GB. Use 4 or 8"; exit 1 ;;
-  *) echo "GPU_ID='${GPU_ID}' gives ${TP_SIZE} GPUs; use 4 or 8 (2 is too small for the weights)"; exit 1 ;;
-esac
+# Per-GPU GiB, smallest of the selected GPUs; falls back to H200 (the verified recipe).
+GPU_MEM_GB="${GPU_MEM_GB:-$(nvidia-smi -i "${GPU_ID}" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | sort -n | awk 'NR==1{print int($1/1024)}' || true)}"
+GPU_MEM_GB="${GPU_MEM_GB:-141}"
+TOTAL_GB=$(( GPU_MEM_GB * TP_SIZE ))
+
+case "${TP_SIZE}" in 2|4|8) ;; *) echo "GPU_ID='${GPU_ID}' gives ${TP_SIZE} GPUs; use 2, 4 or 8"; exit 1 ;; esac
+if (( TOTAL_GB < 500 )); then
+  echo "${TP_SIZE} GPUs x ${GPU_MEM_GB}GiB = ${TOTAL_GB}GiB; DeepSeek-V4.1-Flash weights are ~510GB. Use more GPUs"; exit 1
+fi
+
+DEFAULT_MEM=0.8
+if (( GPU_MEM_GB >= 160 )); then
+  PIN_ARGS=()
+else
+  PIN_ARGS=(--attention-backend dsv4 --moe-runner-backend flashinfer_mxfp4 --cuda-graph-max-bs-decode 64)
+fi
+
+if (( TOTAL_GB < 600 )); then
+  # Required to fit; placed before EXTRA_ARGS so it can override.
+  DEFAULT_MEM=0.92
+  EXTRA_ARGS_ARR=(--max-running-requests 16 --chunked-prefill-size 1024 --context-length "${CONTEXT_LENGTH}" ${EXTRA_ARGS_ARR[@]+"${EXTRA_ARGS_ARR[@]}"})
+  echo "WARNING: ${TP_SIZE}x ${GPU_MEM_GB}GiB is tight; capped at 16 running requests and ${CONTEXT_LENGTH} context"
+fi
+MEM_FRACTION="${MEM_FRACTION:-${DEFAULT_MEM}}"
+
+# DP attention: DP_SIZE=4 on 8 GPUs = attention DP4 x TP2, experts still EP8.
+# Pays off at high concurrency; raise --max-running-requests via EXTRA_ARGS too.
+DP_SIZE="${DP_SIZE:-1}"
+if ! [[ "${DP_SIZE}" =~ ^[0-9]+$ ]] || (( DP_SIZE < 1 || TP_SIZE % DP_SIZE != 0 )); then
+  echo "DP_SIZE='${DP_SIZE}' must be a positive divisor of the GPU count (${TP_SIZE})"; exit 1
+fi
+DP_ARGS=()
+if (( DP_SIZE > 1 )); then
+  DP_ARGS=(--dp-size "${DP_SIZE}" --enable-dp-attention)
+  echo "WARNING: DP attention (DP2 and DP4) crashed on prefill on dev-dsv41 (8x B300); see README"
+fi
 
 DSPARK="${DSPARK:-0}"
 case "${DSPARK}" in
@@ -92,7 +127,7 @@ if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
 fi
 
 echo "Starting SGLang container for ${MODEL_ID}"
-echo "GPUs: ${GPU_ID} (TP${TP_SIZE} + EP${TP_SIZE}, mem-fraction ${MEM_FRACTION})"
+echo "GPUs: ${GPU_ID} (${GPU_MEM_GB}GiB each, TP${TP_SIZE} + EP${TP_SIZE}, DP-attn ${DP_SIZE}, mem-fraction ${MEM_FRACTION})"
 echo "Default thinking: $( (( THINKING )) && echo on || echo off)"
 echo "Spec decode: $( (( DSPARK )) && echo DSpark || echo off)"
 echo "Image: ${IMAGE}"
@@ -121,12 +156,11 @@ docker run -d \
   --tp "${TP_SIZE}" \
   --ep-size "${TP_SIZE}" \
   --mem-fraction-static "${MEM_FRACTION}" \
-  --attention-backend dsv4 \
-  --moe-runner-backend flashinfer_mxfp4 \
-  --cuda-graph-max-bs-decode 64 \
+  "${PIN_ARGS[@]}" \
   --reasoning-parser auto \
   --tool-call-parser auto \
   "${SPEC_ARGS[@]}" \
+  "${DP_ARGS[@]}" \
   --enable-metrics \
   --host "${HOST}" \
   --port "${PORT}" \
