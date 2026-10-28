@@ -94,7 +94,10 @@ if ! [[ "${DP_SIZE}" =~ ^[0-9]+$ ]] || (( DP_SIZE < 1 || TP_SIZE % DP_SIZE != 0 
   echo "DP_SIZE='${DP_SIZE}' must be a positive divisor of the GPU count (${TP_SIZE})"; exit 1
 fi
 DP_ARGS=()
-if (( DP_SIZE > 1 )); then DP_ARGS=(--dp-size "${DP_SIZE}" --enable-dp-attention); fi
+if (( DP_SIZE > 1 )); then
+  DP_ARGS=(--dp-size "${DP_SIZE}" --enable-dp-attention)
+  echo "WARNING: DP attention crashed on the first request on dev-dsv41 (8x B300); see README"
+fi
 
 DSPARK="${DSPARK:-0}"
 case "${DSPARK}" in

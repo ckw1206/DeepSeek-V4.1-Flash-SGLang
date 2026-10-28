@@ -96,7 +96,7 @@ DP_SIZE=8 EXTRA_ARGS="--max-running-requests 512" ./start.sh   # 8 GPUs: attenti
 Notes:
 - `--max-running-requests` is the total across all DP groups (512 is about 128 per group of 4). Raising it does nothing if real concurrency never reaches it.
 - DP attention adds MoE dispatch/combine traffic and can leave some groups idle under uneven load, so it can lose to TP8 at low concurrency. Benchmark both (`python3 -m sglang.bench_serving` at concurrency 16, 64, 128, 256, 512) and compare output tok/s with p99 inter-token latency.
-- The DP flags are not yet verified on the `dev-dsv41` image. Check with `docker run --rm lmsysorg/sglang:dev-dsv41 python3 -m sglang.launch_server --help | grep -E "dp-size|enable-dp-attention"`, then confirm `dp_size` in the startup log's server args.
+- **Known issue (8x B300, `dev-dsv41`, 2026-10-28):** `DP_SIZE=4` boots and captures CUDA graphs, then the first chat request dies with `repeat_interleave ... output_size (194) must be the same as the sum of the elements in the repeats tensor (193)` (device-side assert, scheduler exit -3, whole container killed; `Xid 43` in `dmesg` is the assert, not a hardware fault). `DP_SIZE=1` (TP8/EP8) on the same host works. Until a newer SGLang build fixes it, treat DP attention as experimental here and re-test after updating the image.
 
 ### Settings (`.env` or shell env)
 
@@ -109,7 +109,7 @@ Notes:
 | `MEM_FRACTION` | `0.8` (< 160 GiB GPUs) / `0.9` (>= 160 GiB) / `0.92` (tight) | `--mem-fraction-static` |
 | `THINKING` | `0` | `1` = think by default (`SGLANG_DEFAULT_THINKING`) |
 | `CONTEXT_LENGTH` | `65536` | Tight configs only: `--context-length` cap (otherwise the model window) |
-| `DP_SIZE` | `1` | `>1` = DP attention (`--dp-size N --enable-dp-attention`); e.g. `DP_SIZE=4` on 8 GPUs is DP4 x TP2 attention, experts still EP8. Better at high concurrency, worse at low; pair with `EXTRA_ARGS="--max-running-requests 512"`. Flags unverified on the DSV4 preview image |
+| `DP_SIZE` | `1` | `>1` = DP attention (`--dp-size N --enable-dp-attention`); e.g. `DP_SIZE=4` on 8 GPUs is DP4 x TP2 attention, experts still EP8. Better at high concurrency, worse at low; pair with `EXTRA_ARGS="--max-running-requests 512"`. **Known issue:** crashed on the first request on `dev-dsv41` (see below); keep `1` for now |
 | `DSPARK` | `0` | `1` = DSpark speculative decoding (bundled draft, block size 5) |
 | `HF_CACHE` | `~/.cache/huggingface` | Host model cache |
 | `HF_TOKEN` | unset | Optional (public model) |
