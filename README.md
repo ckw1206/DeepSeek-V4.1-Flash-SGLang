@@ -62,7 +62,7 @@ TP = EP = number of GPUs in `GPU_ID` (2, 4 or 8). `start.sh` reads per-GPU memor
 | Per-GPU memory | Profile |
 |---|---|
 | < 160 GiB (H200) | Cookbook pins `--attention-backend dsv4`, `--moe-runner-backend flashinfer_mxfp4`, `--cuda-graph-max-bs-decode 64`; `MEM_FRACTION` 0.8 |
-| >= 160 GiB (B200, B300, ...) | Pins dropped so SGLang resolves backends and the decode graph list itself; `MEM_FRACTION` 0.9. Untested on these GPUs: check the startup log for the resolved backends |
+| >= 160 GiB (B200, B300, ...) | Pins dropped so SGLang resolves backends and the decode graph list itself; `MEM_FRACTION` stays 0.8 (0.9 hit a prefill OOM on 8x B300 under load). Untested on these GPUs: check the startup log for the resolved backends |
 
 | Total memory (GPUs x per-GPU) | Status |
 |---|---|
@@ -106,7 +106,7 @@ Notes:
 | `GPU_MEM_GB` | auto (`nvidia-smi`) | Per-GPU memory in GiB; picks the H200 vs larger-GPU profile |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | API bind address |
 | `IMAGE` | `lmsysorg/sglang:dev-dsv41` | Preview build; V4.1 is not in an SGLang release yet |
-| `MEM_FRACTION` | `0.8` (< 160 GiB GPUs) / `0.9` (>= 160 GiB) / `0.92` (tight) | `--mem-fraction-static` |
+| `MEM_FRACTION` | `0.8` / `0.92` (tight configs) | `--mem-fraction-static` |
 | `THINKING` | `0` | `1` = think by default (`SGLANG_DEFAULT_THINKING`) |
 | `CONTEXT_LENGTH` | `65536` | Tight configs only: `--context-length` cap (otherwise the model window) |
 | `DP_SIZE` | `1` | `>1` = DP attention (`--dp-size N --enable-dp-attention`); e.g. `DP_SIZE=4` on 8 GPUs is DP4 x TP2 attention, experts still EP8. Better at high concurrency, worse at low; pair with `EXTRA_ARGS="--max-running-requests 512"`. **Known issue:** crashed on the first request on `dev-dsv41` (see below); keep `1` for now |

@@ -23,7 +23,8 @@ set -euo pipefail
 #     Fewer than 160 GiB per GPU (H200) keeps the pins above. At 160+ GiB
 #     (B200, B300, ...) the pins are dropped so SGLang resolves backends and the
 #     decode graph list itself (the cookbook says not to override them; the graph
-#     cap only exists for 140 GiB) and MEM_FRACTION defaults to 0.9. Total memory
+#     cap only exists for 140 GiB) and MEM_FRACTION stays 0.8 (0.9 OOM'd
+#     in prefill on 8x B300 under load; KV is plentiful at 0.8). Total memory
 #     decides the rest: < 500 GiB is rejected, < 600 GiB gets the squeeze caps.
 #     Not yet run on B200/B300 here: check the startup log for resolved backends.
 #   - --reasoning-parser auto (-> deepseek-v41) splits thinking into
@@ -72,11 +73,11 @@ if (( TOTAL_GB < 500 )); then
   echo "${TP_SIZE} GPUs x ${GPU_MEM_GB}GiB = ${TOTAL_GB}GiB; DeepSeek-V4.1-Flash weights are ~510GB. Use more GPUs"; exit 1
 fi
 
+DEFAULT_MEM=0.8
 if (( GPU_MEM_GB >= 160 )); then
-  PIN_ARGS=(); DEFAULT_MEM=0.9
+  PIN_ARGS=()
 else
   PIN_ARGS=(--attention-backend dsv4 --moe-runner-backend flashinfer_mxfp4 --cuda-graph-max-bs-decode 64)
-  DEFAULT_MEM=0.8
 fi
 
 if (( TOTAL_GB < 600 )); then
