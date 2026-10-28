@@ -72,6 +72,8 @@ TP = EP = number of GPUs in `GPU_ID` (2, 4 or 8). `start.sh` reads per-GPU memor
 
 ### Running TP vs DP attention
 
+> **Hint: built for NVL8 nodes** (HGX H200 / B200 / B300 NVL8: 8 GPUs on one NVSwitch NVLink domain, all-to-all full bandwidth). The TP all-reduce and the EP dispatch/combine below all ride NVLink, which is why TP8/EP8 and DP-attention splits are cheap here. On PCIe-only boxes or across nodes the cross-GPU traffic is far more expensive, so expect different results and re-benchmark before copying these settings.
+
 Default is pure tensor parallel: attention TP and expert EP both span every GPU (TP8/EP8 on 8 GPUs). Best latency at low concurrency.
 
 ```bash
