@@ -112,8 +112,7 @@ Start rank 0 first, then the workers. To restart, `./stop.sh` on every node, the
 Requirements and caveats:
 - Nodes must reach each other on `DIST_PORT` (default 20000) and over the high-speed fabric. Multi-node containers get `/dev/infiniband`, unlimited `memlock` and `IPC_LOCK` for RDMA, so the host needs working InfiniBand/RoCE (`ibv_devices`). Set `NCCL_SOCKET_IFNAME` / `NCCL_IB_HCA` if NCCL picks the wrong interface, and `NCCL_DEBUG=INFO` to see which transport each link uses.
 - The model fits on one NVL8 node, so a cluster mostly adds cross-node traffic on every layer. For throughput, two single-node servers behind a load balancer are simpler and usually faster; use a cluster when you need more KV capacity or memory than one node has.
-- **Known issue (2 nodes x 8 GPUs = TP16/EP16, `dev-dsv41`, 2026-10-28):** the rendezvous and NCCL over InfiniBand work (GPUDirect RDMA, verified on 2x 8x B300), but the model fails at weight load with `ValueError: Weight output_partition_size = 144 is not divisible by weight quantization block_n = 32`. A dense FP8 block-quantized weight can't be split 16 ways; TP8 is fine. Use two single-node TP8 servers behind a load balancer instead. A layout that keeps attention TP at 8 (DP attention) is untested and hits the DP known issue above.
-- Bring-up notes from that run: every node uses rank 0's IP as `MASTER_ADDR` (not its own); start rank 1 within about 10 minutes of rank 0 (rank 0's rendezvous gives up after 601 s); if `ibv_devices` lists non-fabric devices, pin `NCCL_IB_HCA` to the fabric NICs (`rdma_` on these hosts); init stalled after `Setup Custom allreduce failed` and completed with `EXTRA_ARGS="--disable-custom-all-reduce"` (one trial).
+- Untested: whether the head and expert counts divide cleanly by 16, and whether the `dev-dsv41` image supports this model across nodes. DP attention (`DP_SIZE`) is not recommended here (see the known issue above).
 
 ### Settings (`.env` or shell env)
 
