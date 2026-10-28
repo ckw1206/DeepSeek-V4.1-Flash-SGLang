@@ -97,7 +97,7 @@ fi
 DP_ARGS=()
 if (( DP_SIZE > 1 )); then
   DP_ARGS=(--dp-size "${DP_SIZE}" --enable-dp-attention)
-  echo "WARNING: DP attention crashed on the first request on dev-dsv41 (8x B300); see README"
+  echo "WARNING: DP attention (DP2 and DP4) crashed on prefill on dev-dsv41 (8x B300); see README"
 fi
 
 DSPARK="${DSPARK:-0}"
