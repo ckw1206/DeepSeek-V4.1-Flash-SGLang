@@ -1,4 +1,4 @@
-# DeepSeek-V4.1-Flash on SGLang (H200)
+# DeepSeek-V4.1-Flash on SGLang
 
 One-command SGLang deployment of [deepseek-ai/DeepSeek-V4.1-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash), serving an OpenAI-compatible API.
 
