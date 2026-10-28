@@ -70,6 +70,32 @@ TP = EP = number of GPUs in `GPU_ID` (2, 4 or 8). `start.sh` reads per-GPU memor
 | 500-600 GiB (4x H200, 2x B300) | Tight vs ~510GB weights; defaults to `MEM_FRACTION` 0.92 plus `--max-running-requests 16 --chunked-prefill-size 1024 --context-length ${CONTEXT_LENGTH}` (default 65536; override via `CONTEXT_LENGTH` or `EXTRA_ARGS`) |
 | < 500 GiB (2x H200) | Rejected: can't hold the weights |
 
+### Running TP vs DP attention
+
+Default is pure tensor parallel: attention TP and expert EP both span every GPU (TP8/EP8 on 8 GPUs). Best latency at low concurrency.
+
+```bash
+./start.sh                                   # TP8 / EP8
+```
+
+`DP_SIZE=N` switches attention to data parallel (`--dp-size N --enable-dp-attention`). Each group of `GPUs / N` GPUs serves its own requests with its own KV cache, while the experts stay sharded across all GPUs (EP = GPU count). `DP_SIZE` must divide the GPU count.
+
+```bash
+DP_SIZE=4 EXTRA_ARGS="--max-running-requests 512" ./start.sh   # 8 GPUs: attention DP4 x TP2, experts EP8
+DP_SIZE=8 EXTRA_ARGS="--max-running-requests 512" ./start.sh   # 8 GPUs: attention DP8 x TP1, experts EP8
+```
+
+| Mode | Attention | Experts | Pick it when |
+|---|---|---|---|
+| `DP_SIZE=1` (default) | TP8 | EP8 | Few concurrent users, lowest per-request latency |
+| `DP_SIZE=4` | DP4 x TP2 | EP8 | High concurrency: KV is not replicated across all GPUs, smaller attention all-reduce, bigger decode batches |
+| `DP_SIZE=8` | DP8 x TP1 | EP8 | Highest concurrency; dense/attention weights are replicated 8x, so it needs the memory headroom of 160+ GiB GPUs |
+
+Notes:
+- `--max-running-requests` is the total across all DP groups (512 is about 128 per group of 4). Raising it does nothing if real concurrency never reaches it.
+- DP attention adds MoE dispatch/combine traffic and can leave some groups idle under uneven load, so it can lose to TP8 at low concurrency. Benchmark both (`python3 -m sglang.bench_serving` at concurrency 16, 64, 128, 256, 512) and compare output tok/s with p99 inter-token latency.
+- The DP flags are not yet verified on the `dev-dsv41` image. Check with `docker run --rm lmsysorg/sglang:dev-dsv41 python3 -m sglang.launch_server --help | grep -E "dp-size|enable-dp-attention"`, then confirm `dp_size` in the startup log's server args.
+
 ### Settings (`.env` or shell env)
 
 | Variable | Default | Description |
