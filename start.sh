@@ -27,6 +27,9 @@ set -euo pipefail
 #     in prefill on 8x B300 under load; KV is plentiful at 0.8). Total memory
 #     decides the rest: < 500 GiB is rejected, < 600 GiB gets the squeeze caps.
 #     Not yet run on B200/B300 here: check the startup log for resolved backends.
+#   - Multi-node (one server across NNODES nodes, TP = EP = GPUs/node * NNODES):
+#     run ./start.sh on every node with its own NODE_RANK and the same MASTER_ADDR
+#     (IP of the rank-0 node); only rank 0 serves the API. See README.
 #   - --reasoning-parser auto (-> deepseek-v41) splits thinking into
 #     reasoning_content. Thinking is OFF by default; send reasoning_effort
 #     per request, or THINKING=1 turns it on server-wide.
@@ -58,17 +61,35 @@ THINKING="${THINKING:-0}"
 # Tight (< 600 GiB total) only: the KV cache is what is left after weights, so the window is capped.
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-65536}"
 HF_CACHE="${HF_CACHE:-${HOME}/.cache/huggingface}"
+NNODES="${NNODES:-1}"
+NODE_RANK="${NODE_RANK:-0}"
+MASTER_ADDR="${MASTER_ADDR:-}"
+DIST_PORT="${DIST_PORT:-20000}"
+NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-}"
+NCCL_IB_HCA="${NCCL_IB_HCA:-}"
+NCCL_DEBUG="${NCCL_DEBUG:-}"
 # Free-form extra SGLang flags, appended LAST (argparse last-wins):
 #   EXTRA_ARGS="--max-running-requests 256" ./start.sh
 read -ra EXTRA_ARGS_ARR <<< "${EXTRA_ARGS:-}"
 
-TP_SIZE="$(tr ',' '\n' <<< "${GPU_ID}" | grep -c '[0-9]' || true)"
+GPUS_PER_NODE="$(tr ',' '\n' <<< "${GPU_ID}" | grep -c '[0-9]' || true)"
+if ! [[ "${NNODES}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "NNODES must be a positive integer, got '${NNODES}'"; exit 1
+fi
+if ! [[ "${NODE_RANK}" =~ ^[0-9]+$ ]] || (( 10#${NODE_RANK} >= NNODES )); then
+  echo "NODE_RANK must be 0..$((NNODES - 1)) for NNODES=${NNODES}, got '${NODE_RANK}'"; exit 1
+fi
+NODE_RANK=$((10#${NODE_RANK}))  # strip leading zeros so 08 is not octal
+if (( NNODES > 1 )) && [[ -z "${MASTER_ADDR}" ]]; then
+  echo "MASTER_ADDR is required when NNODES > 1 (IP of the rank-0 node)"; exit 1
+fi
+TP_SIZE=$(( GPUS_PER_NODE * NNODES ))
 # Per-GPU GiB, smallest of the selected GPUs; falls back to H200 (the verified recipe).
 GPU_MEM_GB="${GPU_MEM_GB:-$(nvidia-smi -i "${GPU_ID}" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | sort -n | awk 'NR==1{print int($1/1024)}' || true)}"
 GPU_MEM_GB="${GPU_MEM_GB:-141}"
 TOTAL_GB=$(( GPU_MEM_GB * TP_SIZE ))
 
-case "${TP_SIZE}" in 2|4|8) ;; *) echo "GPU_ID='${GPU_ID}' gives ${TP_SIZE} GPUs; use 2, 4 or 8"; exit 1 ;; esac
+case "${GPUS_PER_NODE}" in 2|4|8) ;; *) echo "GPU_ID='${GPU_ID}' gives ${GPUS_PER_NODE} GPUs per node; use 2, 4 or 8"; exit 1 ;; esac
 if (( TOTAL_GB < 500 )); then
   echo "${TP_SIZE} GPUs x ${GPU_MEM_GB}GiB = ${TOTAL_GB}GiB; DeepSeek-V4.1-Flash weights are ~510GB. Use more GPUs"; exit 1
 fi
@@ -100,6 +121,20 @@ if (( DP_SIZE > 1 )); then
   echo "WARNING: DP attention (DP2 and DP4) crashed on prefill on dev-dsv41 (8x B300); see README"
 fi
 
+# Multi-node: rendezvous flags, plus RDMA access for the cross-node NCCL traffic.
+DIST_ARGS=()
+DOCKER_DIST_ARGS=()
+if (( NNODES > 1 )); then
+  DIST_ARGS=(--nnodes "${NNODES}" --node-rank "${NODE_RANK}" --dist-init-addr "${MASTER_ADDR}:${DIST_PORT}")
+  DOCKER_DIST_ARGS=(--device /dev/infiniband --ulimit memlock=-1 --cap-add IPC_LOCK)
+fi
+DOCKER_NCCL_ENV=()
+if [[ -n "${NCCL_SOCKET_IFNAME}" ]]; then
+  DOCKER_NCCL_ENV+=(-e "NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME}" -e "GLOO_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME}")
+fi
+if [[ -n "${NCCL_IB_HCA}" ]]; then DOCKER_NCCL_ENV+=(-e "NCCL_IB_HCA=${NCCL_IB_HCA}"); fi
+if [[ -n "${NCCL_DEBUG}" ]]; then DOCKER_NCCL_ENV+=(-e "NCCL_DEBUG=${NCCL_DEBUG}"); fi
+
 DSPARK="${DSPARK:-0}"
 case "${DSPARK}" in
   0) SPEC_ARGS=() ;;
@@ -127,13 +162,16 @@ if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
 fi
 
 echo "Starting SGLang container for ${MODEL_ID}"
-echo "GPUs: ${GPU_ID} (${GPU_MEM_GB}GiB each, TP${TP_SIZE} + EP${TP_SIZE}, DP-attn ${DP_SIZE}, mem-fraction ${MEM_FRACTION})"
+echo "Nodes: ${NNODES} (this node's rank: ${NODE_RANK})"
+echo "GPUs: ${GPU_ID} per node (${GPU_MEM_GB}GiB each, TP${TP_SIZE} + EP${TP_SIZE}, DP-attn ${DP_SIZE}, mem-fraction ${MEM_FRACTION})"
 echo "Default thinking: $( (( THINKING )) && echo on || echo off)"
 echo "Spec decode: $( (( DSPARK )) && echo DSpark || echo off)"
 echo "Image: ${IMAGE}"
 echo "Served model name: ${SERVED_MODEL_NAME}"
-echo "Listening on ${HOST}:${PORT}"
-echo "Writing progress to ${LOG_FILE}"
+if (( NODE_RANK == 0 )); then
+  echo "Listening on ${HOST}:${PORT}"
+  echo "Writing progress to ${LOG_FILE}"
+fi
 
 echo "[$(date -Is)] launching SGLang container" > "${LOG_FILE}"
 
@@ -147,6 +185,8 @@ docker run -d \
   -e HF_TOKEN="${HF_TOKEN:-}" \
   -e SGLANG_DEFAULT_THINKING="${THINKING}" \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  ${DOCKER_NCCL_ENV[@]+"${DOCKER_NCCL_ENV[@]}"} \
+  ${DOCKER_DIST_ARGS[@]+"${DOCKER_DIST_ARGS[@]}"} \
   -v "${HF_CACHE}:/root/.cache/huggingface" \
   "${IMAGE}" \
   python3 -m sglang.launch_server \
@@ -161,6 +201,7 @@ docker run -d \
   --tool-call-parser auto \
   "${SPEC_ARGS[@]}" \
   "${DP_ARGS[@]}" \
+  ${DIST_ARGS[@]+"${DIST_ARGS[@]}"} \
   --enable-metrics \
   --host "${HOST}" \
   --port "${PORT}" \
@@ -177,6 +218,13 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+# Workers only join the rendezvous; the API (and readiness) is on rank 0.
+if (( NODE_RANK != 0 )); then
+  echo "Worker started; it joins rank 0 at ${MASTER_ADDR}:${DIST_PORT}. Start rank 0 first."
+  echo "Log: docker logs -f ${CONTAINER_NAME}"
+  exit 0
+fi
 
 docker logs -f "${CONTAINER_NAME}" 2>&1 | tee -a "${LOG_FILE}" &
 log_follow_pid=$!
