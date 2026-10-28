@@ -87,6 +87,15 @@ if (( TOTAL_GB < 600 )); then
 fi
 MEM_FRACTION="${MEM_FRACTION:-${DEFAULT_MEM}}"
 
+# DP attention: DP_SIZE=4 on 8 GPUs = attention DP4 x TP2, experts still EP8.
+# Pays off at high concurrency; raise --max-running-requests via EXTRA_ARGS too.
+DP_SIZE="${DP_SIZE:-1}"
+if ! [[ "${DP_SIZE}" =~ ^[0-9]+$ ]] || (( DP_SIZE < 1 || TP_SIZE % DP_SIZE != 0 )); then
+  echo "DP_SIZE='${DP_SIZE}' must be a positive divisor of the GPU count (${TP_SIZE})"; exit 1
+fi
+DP_ARGS=()
+if (( DP_SIZE > 1 )); then DP_ARGS=(--dp-size "${DP_SIZE}" --enable-dp-attention); fi
+
 DSPARK="${DSPARK:-0}"
 case "${DSPARK}" in
   0) SPEC_ARGS=() ;;
@@ -114,7 +123,7 @@ if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
 fi
 
 echo "Starting SGLang container for ${MODEL_ID}"
-echo "GPUs: ${GPU_ID} (${GPU_MEM_GB}GiB each, TP${TP_SIZE} + EP${TP_SIZE}, mem-fraction ${MEM_FRACTION})"
+echo "GPUs: ${GPU_ID} (${GPU_MEM_GB}GiB each, TP${TP_SIZE} + EP${TP_SIZE}, DP-attn ${DP_SIZE}, mem-fraction ${MEM_FRACTION})"
 echo "Default thinking: $( (( THINKING )) && echo on || echo off)"
 echo "Spec decode: $( (( DSPARK )) && echo DSpark || echo off)"
 echo "Image: ${IMAGE}"
@@ -147,6 +156,7 @@ docker run -d \
   --reasoning-parser auto \
   --tool-call-parser auto \
   "${SPEC_ARGS[@]}" \
+  "${DP_ARGS[@]}" \
   --enable-metrics \
   --host "${HOST}" \
   --port "${PORT}" \

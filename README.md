@@ -81,6 +81,7 @@ TP = EP = number of GPUs in `GPU_ID` (2, 4 or 8). `start.sh` reads per-GPU memor
 | `MEM_FRACTION` | `0.8` (< 160 GiB GPUs) / `0.9` (>= 160 GiB) / `0.92` (tight) | `--mem-fraction-static` |
 | `THINKING` | `0` | `1` = think by default (`SGLANG_DEFAULT_THINKING`) |
 | `CONTEXT_LENGTH` | `65536` | Tight configs only: `--context-length` cap (otherwise the model window) |
+| `DP_SIZE` | `1` | `>1` = DP attention (`--dp-size N --enable-dp-attention`); e.g. `DP_SIZE=4` on 8 GPUs is DP4 x TP2 attention, experts still EP8. Better at high concurrency, worse at low; pair with `EXTRA_ARGS="--max-running-requests 512"`. Flags unverified on the DSV4 preview image |
 | `DSPARK` | `0` | `1` = DSpark speculative decoding (bundled draft, block size 5) |
 | `HF_CACHE` | `~/.cache/huggingface` | Host model cache |
 | `HF_TOKEN` | unset | Optional (public model) |
