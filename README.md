@@ -98,34 +98,11 @@ Notes:
 - DP attention adds MoE dispatch/combine traffic and can leave some groups idle under uneven load, so it can lose to TP8 at low concurrency. Benchmark both (`python3 -m sglang.bench_serving` at concurrency 16, 64, 128, 256, 512) and compare output tok/s with p99 inter-token latency.
 - **Known issue (8x B300, `dev-dsv41`, 2026-10-28):** DP attention crashes on prefill at both `DP_SIZE=4` (DP4 x TP2) and `DP_SIZE=2` (DP2 x TP4). The server boots and captures CUDA graphs, then a chat request dies with `repeat_interleave ... output_size (N) must be the same as the sum of the elements in the repeats tensor (193)` (device-side assert; later errors such as `CUBLAS_STATUS_EXECUTION_FAILED` are fallout; scheduler exit -3 kills the container; `Xid 43` in `dmesg` is the assert, not hardware). `N` was 194 with attention TP 2 and 196 with attention TP 4, i.e. 193 rounded up to a multiple of the attention-TP size, which suggests the token count is padded but not matched in `repeat_interleave` (unconfirmed). `DP_SIZE=1` (TP8/EP8) on the same host works. Treat DP attention as broken here until a newer SGLang build fixes it.
 
-### Multi-node cluster (one server across nodes)
-
-Serves one model across `NNODES` nodes: TP = EP = GPUs per node x `NNODES` (2 nodes x 8 GPUs = TP16/EP16). Every node runs `./start.sh` with its own `NODE_RANK` and the same `MASTER_ADDR` (the rank-0 node's IP); only rank 0 serves the API. Set the values in `.env` on each node (`cp .env.sample .env`) or inline:
-
-```bash
-NNODES=2 NODE_RANK=0 MASTER_ADDR=10.0.0.1 ./start.sh   # node 0 (serves the API)
-NNODES=2 NODE_RANK=1 MASTER_ADDR=10.0.0.1 ./start.sh   # node 1 (worker)
-```
-
-Start rank 0 first, then the workers. To restart, `./stop.sh` on every node, then start rank 0 first again.
-
-Requirements and caveats:
-- Nodes must reach each other on `DIST_PORT` (default 20000) and over the high-speed fabric. Multi-node containers get `/dev/infiniband`, unlimited `memlock` and `IPC_LOCK` for RDMA, so the host needs working InfiniBand/RoCE (`ibv_devices`). Set `NCCL_SOCKET_IFNAME` / `NCCL_IB_HCA` if NCCL picks the wrong interface, and `NCCL_DEBUG=INFO` to see which transport each link uses.
-- The model fits on one NVL8 node, so a cluster mostly adds cross-node traffic on every layer. For throughput, two single-node servers behind a load balancer are simpler and usually faster; use a cluster when you need more KV capacity or memory than one node has.
-- Untested: whether the head and expert counts divide cleanly by 16, and whether the `dev-dsv41` image supports this model across nodes. DP attention (`DP_SIZE`) is not recommended here (see the known issue above).
-
 ### Settings (`.env` or shell env)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NNODES` | `1` | Node count for a cluster (TP = EP = GPUs per node x `NNODES`) |
-| `NODE_RANK` | `0` | This node's rank, 0..`NNODES`-1; only rank 0 serves the API |
-| `MASTER_ADDR` | unset | IP of the rank-0 node; required when `NNODES` > 1 |
-| `DIST_PORT` | `20000` | Rendezvous port (`--dist-init-addr`) |
-| `NCCL_SOCKET_IFNAME` | unset | Network interface for NCCL (also set for GLOO) |
-| `NCCL_IB_HCA` | unset | InfiniBand/RoCE HCAs for NCCL |
-| `NCCL_DEBUG` | unset | NCCL log level (`INFO` shows the transport per link) |
-| `GPU_ID` | `0,1,2,3,4,5,6,7` | This node's GPUs passed to the container (2, 4 or 8; see Parallelism) |
+| `GPU_ID` | `0,1,2,3,4,5,6,7` | GPUs passed to the container (2, 4 or 8; see Parallelism) |
 | `GPU_MEM_GB` | auto (`nvidia-smi`) | Per-GPU memory in GiB; picks the H200 vs larger-GPU profile |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | API bind address |
 | `IMAGE` | `lmsysorg/sglang:dev-dsv41` | Preview build; V4.1 is not in an SGLang release yet |
